@@ -330,3 +330,5 @@ At this point we have basic traffic generation coming from multiple clients. We
 can add further tools to validate the files that are brought over using a
 checksum. For now let's leave that as an exercise for the motivated reader or as
 a possible further article.
+
+Source Code: [[https://github.com/stevelatif/traffic-generator/tree/main/traffic-runner][Here]]
