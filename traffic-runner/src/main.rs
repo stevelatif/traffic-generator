@@ -4,71 +4,11 @@ use std::net::Ipv4Addr;
 use tokio::process::Command;
 use tokio::task;
 use tokio::time::{Duration, sleep};
-
-//  Set up the network configuration:
-// #!/bin/bash
-//
-// Explansaion of the network setup
-//     Requirements:
-//     All macvlan interfaces must have:
-//     A unique MAC address
-//     A unique IP address
-//     They must all be in separate network namespaces (or at least logically isolated).
-//     They can all use the same parent interface (e.g., enp16s0f0) if in bridge mode.
-//
-//     Synopsis:
-//     Create a bridge on the host (br0)
-//     Connect a veth pair: veth-host on the host, veth-ns in a network namespace
-//     Attach both the veth-host and the macvlan interface (in bridge mode) to br0
-//     The host, namespace (via veth), and macvlan can all communicate
-//
-//     Explanation:
-//         enp16s0f0 acts as the real NIC.
-//         The macvlan interface (macvlan0) in bridge mode sends direct L2 frames with its own MAC address.
-//         The external host sees it as an independent device.
-//         This setup does not allow the host to ping 192.168.56.10, but the external host at 192.168.56.20 can.
-//         You can’t attach a macvlan interface directly to a veth. But by introducing a bridge, you can make macvlan and veth-based networking interoperate, which enables host-to-macvlan communication (indirectly).
-//
-//     Veth Pair:
-//         Acts like a virtual Ethernet cable — two ends: one stays in the root namespace, the other goes into the container/namespace.
-//         Commonly used to bridge namespaces or containers to the host or a Linux bridge.
-//     Macvlan (Bridge Mode):
-//         Creates a virtual NIC that behaves like it’s physically on the network.
-//         Assigned its own MAC address and appears to be a separate device to the outside network.
-//         Cannot communicate with its parent interface or other macvlan interfaces on the same parent due to Linux kernel design.
-
-//
-// set -e
-// PARENT_IF="enp16s0f0"
-// NET="192.168.56"
-// COUNT=3
-// # Cleanup first
-// for i in $(seq 1 $COUNT); do
-//     ip netns del mvns$i 2>/dev/null || true
-//     ip link del macvlan$i 2>/dev/null || true   <-- not needed
-// done
-// # Create N macvlan interfaces
-// for i in $(seq 1 $COUNT); do
-//     NS="mvns$i"
-//     MV="macvlan$i"
-//     IP="${NET}.$((10 + i))"
-//     echo "Setting up $MV with IP $IP in namespace $NS"
-//     ip netns add $NS
-//     # Create macvlan in bridge mode
-//     ip link add $MV link $PARENT_IF type macvlan mode bridge
-//     ip link set $MV netns $NS
-//     # Configure in namespace
-//     ip netns exec $NS ip addr add ${IP}/24 dev $MV
-//     ip netns exec $NS ip link set $MV up
-//     ip netns exec $NS ip link set lo up
-//     ip netns exec $NS ip route add default dev $MV
-// done
-//
-//
-//
-// Then run smbclient in one of the created namespaces
-// sudo ip netns exec mvns3 smbclient -L  //192.168.56.20 -U guest -N
-//
+use tempfile::NamedTempFile;
+use sha2::{Sha256, Digest};
+use hex_literal::hex;
+use tokio::fs::File;
+use tokio::io;
 
 #[derive(Debug, Clone)]
 struct LocalConfig {
@@ -81,16 +21,6 @@ struct LocalConfig {
 
 async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
     //let base_if = "mvlan".to_string();
-    println!("setting up");
-
-    // Set up new namespace
-    // the actual interface
-    //     .arg("add")
-    //     .arg("mvlan_ns")
-    //     .output();
-    // let ns_output = ns_output.await?;
-    // println!("ns add exited with stdout: {:?} stderr: {:?}", str::from_utf8(&ns_output.stdout), str::from_utf8(&ns_output.stderr));
-
     for (idx, ii) in config.hosts.enumerate() {
         // interface name cannont be longer than 16 characters
         // take the last two octects and merge  with the string `macvlan`
@@ -104,14 +34,13 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("add")
             .arg(&ns)
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns add exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns add exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
 
-        //
         //     ip link add $MV link $PARENT_IF type macvlan mode bridge
         let ip_link_output = Command::new("/usr/sbin/ip")
             .arg("link")
@@ -124,12 +53,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("mode")
             .arg("bridge")
             .output();
-        let ip_link_output = ip_link_output.await?;
-        println!(
-            "link ip link exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ip_link_output.stdout),
-            str::from_utf8(&ip_link_output.stderr)
-        );
+        let _ip_link_output = ip_link_output.await?;
+        // println!(
+        //     "link ip link exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ip_link_output.stdout),
+        //     str::from_utf8(&ip_link_output.stderr)
+        // );
 
         //     ip link set $MV netns $NS
         let ns_output = Command::new("/usr/sbin/ip")
@@ -139,12 +68,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("netns")
             .arg(&ns)
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns add exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns add exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
 
         //     ip netns exec $NS ip addr add ${IP}/24 dev $MV
         //     ip link set $MV netns $NS
@@ -159,12 +88,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("dev")
             .arg(&macvlan)
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns exec addr add exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns exec addr add exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
 
         //     ip netns exec $NS ip link set $MV up
         let ns_output = Command::new("/usr/sbin/ip")
@@ -177,12 +106,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg(&macvlan)
             .arg("up")
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns exec link up exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns exec link up exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
 
         //     ip netns exec $NS ip link set lo up
         let ns_output = Command::new("/usr/sbin/ip")
@@ -195,12 +124,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("lo")
             .arg("up")
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns exec link lo up exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns exec link lo up exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
 
         //     ip netns exec $NS ip route add default dev $MV
         let ns_output = Command::new("/usr/sbin/ip")
@@ -214,12 +143,12 @@ async fn set_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
             .arg("dev")
             .arg(&macvlan)
             .output();
-        let ns_output = ns_output.await?;
-        println!(
-            "link netns add default route exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&ns_output.stdout),
-            str::from_utf8(&ns_output.stderr)
-        );
+        let _ns_output = ns_output.await?;
+        // println!(
+        //     "link netns add default route exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&ns_output.stdout),
+        //     str::from_utf8(&ns_output.stderr)
+        // );
     }
 
     Ok(())
@@ -245,27 +174,23 @@ fn set_up_config(
     Ok(config)
 }
 
-// sudo ip link del mvlan5
 async fn clean_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
-    // # Cleanup first
-    //    ip netns del mvns$i 2>/dev/null || true
-
     for (idx, _) in config.hosts.enumerate() {
-        let nms = format!("{}{}", config.base_namespace, idx);
-        let mvlans = format!("macvlan{}", idx);
-        println!("deleting interface: {}", mvlans);
-
-        let clean_up_output = Command::new("/usr/sbin/ip")
+	let nms = format!("{}{}", config.base_namespace, idx);
+	let mvlans = format!("macvlan{}", idx);
+	println!("deleting interface: {}", mvlans);
+	
+	let clean_up_output = Command::new("/usr/sbin/ip")
             .arg("netns")
             .arg("del")
             .arg(nms)
             .output();
-        let clean_up_output = clean_up_output.await?;
-        println!(
-            "link del namespaces exited with stdout: {:?} stderr: {:?}",
-            str::from_utf8(&clean_up_output.stdout),
-            str::from_utf8(&clean_up_output.stderr)
-        );
+	let _clean_up_output = clean_up_output.await?;
+	// println!(
+        //     "link del namespaces exited with stdout: {:?} stderr: {:?}",
+        //     str::from_utf8(&clean_up_output.stdout),
+        //     str::from_utf8(&clean_up_output.stderr)
+	// );
     }
     Ok(())
 }
@@ -413,24 +338,31 @@ async fn main() {
         Err(e) => panic!("could not set up the configuration {:#?}", e),
     };
 
-    let res = set_up(local_config.clone()).await;
-    println!("res: {:?}", res);
+    let _res = set_up(local_config.clone()).await;
     sleep(Duration::from_millis(100)).await;
     spawn_task(local_config.clone(), smb_address, file).await;
     sleep(Duration::from_millis(100)).await;
-    let res = clean_up(local_config).await;
-    println!("res: {:?}", res);
+    let _res = clean_up(local_config).await;
 }
 
 async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &String) {
     let (tx, rx) = flume::bounded(10);
-
     for (idx, _ii) in config.hosts.enumerate() {
         let tx = tx.clone();
+	let tf = match NamedTempFile::new() {
+	    Ok(tf) => tf,
+	    Err(e) => panic!("Failed to create temporary file: {}", e),
+	};
+	
+	let out_file = match tf.path().to_str() {
+	    Some(filename) => filename,
+	    None => panic!("failed to get filename"),
+	};
+	
         let namespace_ii = format!("{}{}", config.base_namespace, idx);
         let add = format!("//{}/public/", smb_address);
-        let ff = format!("get {}", filename);
-
+        let ff = format!("get {} {}", filename, out_file);
+	println!("creating out file {}", out_file);
         // Convert address string to Ipv4Addr
         task::spawn(async move {
             let output = Command::new("/usr/sbin/ip")
@@ -450,12 +382,12 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
                 .await;
 
             match output {
-                Ok(out) => {
-                    println!(
-                        "stdout: {:?}\n  stderr{:?}",
-                        str::from_utf8(&out.stdout),
-                        str::from_utf8(&out.stderr)
-                    );
+                Ok(_out) => {
+                    // println!(
+                    //     "stdout: {:?}\n  stderr{:?}",
+                    //     str::from_utf8(&out.stdout),
+                    //     str::from_utf8(&out.stderr)
+                    // );
                     tx.send_async(0).await.unwrap();
                 }
                 Err(e) => {
@@ -463,6 +395,18 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
                 }
             }
         });
+	// verfify the sha256sum
+	let bytes = std::fs::read(out_filee).unwrap();  // Vec<u8>
+	let hash = sha256::digest_bytes(&bytes);	
+	let mut file = File::open(out_file).await;
+	// {
+	//     Ok(fo) => println!("opened file for reading"),
+	//     Err(e) => panic!("failed to open file for checksum {}", e),
+	// };
+	let mut sha256 = Sha256::new();
+	io::copy(&mut file, &mut sha256);
+	let hash = sha256.result();
+	println!("hash is: {:x}", hash);
     }
     drop(tx);
 
@@ -471,3 +415,4 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
         println!("Task {ii} completed with output: {:?}", message);
     }
 }
+
