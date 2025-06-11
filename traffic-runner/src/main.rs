@@ -171,21 +171,21 @@ fn set_up_config(
 
 async fn clean_up(config: LocalConfig) -> Result<(), Box<dyn std::error::Error>> {
     for (idx, _) in config.hosts.enumerate() {
-	let nms = format!("{}{}", config.base_namespace, idx);
-	let mvlans = format!("macvlan{}", idx);
-	println!("deleting interface: {}", mvlans);
-	
-	let clean_up_output = Command::new("/usr/sbin/ip")
+        let nms = format!("{}{}", config.base_namespace, idx);
+        let mvlans = format!("macvlan{}", idx);
+        println!("deleting interface: {}", mvlans);
+
+        let clean_up_output = Command::new("/usr/sbin/ip")
             .arg("netns")
             .arg("del")
             .arg(nms)
             .output();
-	let _clean_up_output = clean_up_output.await?;
-	// println!(
+        let _clean_up_output = clean_up_output.await?;
+        // println!(
         //     "link del namespaces exited with stdout: {:?} stderr: {:?}",
         //     str::from_utf8(&clean_up_output.stdout),
         //     str::from_utf8(&clean_up_output.stderr)
-	// );
+        // );
     }
     Ok(())
 }
@@ -340,19 +340,14 @@ async fn main() {
     let _res = clean_up(local_config).await;
 }
 
-
-
-
-async fn spawn_task(config: LocalConfig,
-		    smb_address: Ipv4Addr,
-		    filename: &String) {
+async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &String) {
     let (tx, rx) = flume::bounded(10);
     for (idx, _ii) in config.hosts.enumerate() {
         let tx = tx.clone();
-	
+
         let namespace_ii = format!("{}{}", config.base_namespace, idx);
         let add = format!("//{}/public/", smb_address);
-	let ff = format!("get {}", filename);
+        let ff = format!("get {}", filename);
 
         // Convert address string to Ipv4Addr
         task::spawn(async move {
@@ -381,10 +376,9 @@ async fn spawn_task(config: LocalConfig,
         });
     }
     drop(tx);
-    
+
     for ii in 0..config.count {
         let message = rx.recv().unwrap();
         println!("Task {ii} completed with output: {:?}", message);
     }
 }
-
