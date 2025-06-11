@@ -24,6 +24,38 @@ The scenario that we were trying to replicate was something like:
   The following diagram is an illustration of the set up 
 [[./images/maxwell.png]]
 
+A standard network client socket works in the following way:
+[[./images/client.png]]
+
+To get the client socket to be associated with the a particular IP address we
+can use the [[https://man7.org/linux/man-pages/man2/bind.2.html][bind]] system call. This introduces a problem, the socket call is
+being made by the smbclient program. We could get the source code and alter it
+to make the bind call. We would also need to pass some extra parameters to tell
+it which interface or address to bind to. The codebase is large and the
+complexities are starting to mount.
+
+Instead we can do a `hack`, if we can load
+our own version of the library with the socket system call we can create a
+socket in the usual way, get the file descriptor that is returned and then use
+that to bind the socket to the interface we want. This is where LD_PRELOAD and
+dl_sym come in.
+
+[[./images/clientbind.png]]
+
+
+The one remaining problem is that the IP aliased interfaces only have unique IP
+addresses, but the underlying MAC address is that of the actual physical
+interface.
+
+At the time we got around this problem by rewriting the Ethernet headers and
+mapping the ethernet address to one based on the IP address for the packets
+going out to the SMB filer. On the way back they were all rewritten to the
+correct address.
+
+
+The reason for the maxwell in this setup is that the IP aliased interfaces have
+unique IP addresses, but they all have the same IP address as the underlying 
+
 In the time since I built this there's been new features added to the Linux
 networking stack. This article goes through some of the ideas that I tried to
 get a more robust version working. The solution turned out to be more  

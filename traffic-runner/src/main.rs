@@ -4,11 +4,6 @@ use std::net::Ipv4Addr;
 use tokio::process::Command;
 use tokio::task;
 use tokio::time::{Duration, sleep};
-use tempfile::NamedTempFile;
-use sha2::{Sha256, Digest};
-use hex_literal::hex;
-use tokio::fs::File;
-use tokio::io;
 
 #[derive(Debug, Clone)]
 struct LocalConfig {
@@ -345,24 +340,20 @@ async fn main() {
     let _res = clean_up(local_config).await;
 }
 
-async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &String) {
+
+
+
+async fn spawn_task(config: LocalConfig,
+		    smb_address: Ipv4Addr,
+		    filename: &String) {
     let (tx, rx) = flume::bounded(10);
     for (idx, _ii) in config.hosts.enumerate() {
         let tx = tx.clone();
-	let tf = match NamedTempFile::new() {
-	    Ok(tf) => tf,
-	    Err(e) => panic!("Failed to create temporary file: {}", e),
-	};
-	
-	let out_file = match tf.path().to_str() {
-	    Some(filename) => filename,
-	    None => panic!("failed to get filename"),
-	};
 	
         let namespace_ii = format!("{}{}", config.base_namespace, idx);
         let add = format!("//{}/public/", smb_address);
-        let ff = format!("get {} {}", filename, out_file);
-	println!("creating out file {}", out_file);
+	let ff = format!("get {}", filename);
+
         // Convert address string to Ipv4Addr
         task::spawn(async move {
             let output = Command::new("/usr/sbin/ip")
@@ -376,18 +367,11 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
                 .arg(smb_address.to_string())
                 .arg("-c")
                 .arg(ff)
-                //.env("LD_PRELOAD", "./libsocket_interceptor.so" )
-                //.env("__CLIENT_ADDRESS__", &ii.to_string())
                 .output()
                 .await;
 
             match output {
                 Ok(_out) => {
-                    // println!(
-                    //     "stdout: {:?}\n  stderr{:?}",
-                    //     str::from_utf8(&out.stdout),
-                    //     str::from_utf8(&out.stderr)
-                    // );
                     tx.send_async(0).await.unwrap();
                 }
                 Err(e) => {
@@ -395,21 +379,9 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
                 }
             }
         });
-	// verfify the sha256sum
-	let bytes = std::fs::read(out_filee).unwrap();  // Vec<u8>
-	let hash = sha256::digest_bytes(&bytes);	
-	let mut file = File::open(out_file).await;
-	// {
-	//     Ok(fo) => println!("opened file for reading"),
-	//     Err(e) => panic!("failed to open file for checksum {}", e),
-	// };
-	let mut sha256 = Sha256::new();
-	io::copy(&mut file, &mut sha256);
-	let hash = sha256.result();
-	println!("hash is: {:x}", hash);
     }
     drop(tx);
-
+    
     for ii in 0..config.count {
         let message = rx.recv().unwrap();
         println!("Task {ii} completed with output: {:?}", message);
