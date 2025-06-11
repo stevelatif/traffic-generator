@@ -1,65 +1,160 @@
 * Traffic Generation With SMBClient and Macvlans
 :PROPERTIES:
 :ID:       5354aa94-4145-4d35-92f1-c1d6de4c4acb
+#+OPTIONS: num:nil
 :END:
 Many years ago I had to replicate a customer issue of a  1000+ windows
-clients mounting a shared drive. With some luck, a few band aids some
-C and Perl and custom hardware I was able to build something that
-worked some of the time and allowed us to replicate the scenario in
-the lab.
+clients mounting a shared drive. With luck, some
+C, Perl and custom hardware I was able to build something that
+worked, some of the time.
+
+In this article I will describe the original approach accomplished with luck and
+a modern implementation that uses modern Linux networking.
 
 The scenario that we were trying to replicate was something like:
 - A large lab with a single Windows Filer
 - A thousand client machines that would mount a shared drive when the staff 
   started work in the morning.
 
- The final setup to emulate this was a single Linux box running:
- -  [[https://linux.die.net/man/1/smbclient][smbclient]] CLI tool to generate the traffic
+** First Attempt Linux 2003 
+
+ The first setup to emulate this was a single Linux box running:
  - threaded C code to drive the client and
+ - [[https://linux.die.net/man/1/smbclient][=smbclient=]] CLI tool to generate the traffic
  - system calls [[https://man7.org/linux/man-pages/man3/dlopen.3.html][dlopen]] and [[https://man7.org/linux/man-pages/man2/bind.2.html][bind]] to simulate a thousand connections by binding to
    [[https://docs.kernel.org/networking/alias.html][IP aliased interfaces]]
  - network emulator [[https://www.iwl.com/products/maxwell-pro][Maxwell]] from the good people at [[https://www.iwl.com/][IWL]] to rewrite the ethernet
    headers.
 
   The following diagram is an illustration of the set up
+A standard network client socket works in the following way:
+
 #+CAPTION: Traffic generation with Maxwell Pro
 #+NAME:   fig:config001
 [[./images/maxwell.png]]
 
-A standard network client socket works in the following way:
-#+CAPTION: System Calls
-#+NAME:   fig:system002
-[[./images/client.png]]
-
 To get the client socket to be associated with the a particular IP address we
 can use the [[https://man7.org/linux/man-pages/man2/bind.2.html][bind]] system call. This introduces a problem, the socket call is
-being made by the smbclient program. We could get the source code and alter it
+being made by the ==smbclient== program. We could get the source code and alter it
 to make the bind call. We would also need to pass some extra parameters to tell
 it which interface or address to bind to. The codebase is large and the
 complexities are starting to mount.
 
+#+CAPTION: Standard client socket set up
+#+NAME:   fig:system002
+[[./images/client.png]]
+
 Instead we can do a `hack`, if we can load
 our own version of the library with the socket system call we can create a
 socket in the usual way, get the file descriptor that is returned and then use
-that to bind the socket to the interface we want. This is where LD_PRELOAD and
-dl_sym come in.
-#+CAPTION: Client Bind
+that to bind the socket to the interface we want. This is where =LD_PRELOAD= and
+=dl_sym= come in.
+#+CAPTION: Modified client socket setup with bind
 #+NAME:   fig:clientbind003
 [[./images/clientbind.png]]
 
+I originally wrote this in C, but here's an example in Rust. The logic is the same.
+#+begin_src rust -n
+extern crate libc;
+use libc::{sockaddr_in, AF_INET, sockaddr, __errno_location};
+use log::info;
+use std::mem;
+use std::fs::File;
+use std::io::prelude::*;
 
-The one remaining problem is that the IP aliased interfaces only have unique IP
-addresses, but the underlying MAC address is that of the actual physical
-interface.
+#[macro_use]
+extern crate redhook;
+
+redhook::hook! {
+    unsafe fn socket(inet: i32, s_type: i32, protocol: i32) -> i32 => my_socket {
+	let mut aa = std::net::Ipv4Addr::new(0,0,0,0);
+	let mut file = File::create("/tmp/socket_intercept.txt").expect("failed to create file");
+	
+	match std::env::var("__CLIENT_ADDRESS__") {
+	    Ok(val) => { file.write_all(val.as_bytes()).expect("failed to write file"); aa = val.parse::<std::net::Ipv4Addr>().unwrap();},
+	    Err(e) => info!("got nothing! {e}"),
+	}
+
+	let octets = aa.octets();
+	let port : u16  = 0;
+	
+	let sock_addr = sockaddr_in {
+	    sin_family: AF_INET as u16,
+	    sin_port: port.to_be(),
+	    sin_addr: libc::in_addr { s_addr: u32::from_ne_bytes(octets) },
+	    sin_zero: [0;8],
+	} ;
+
+	#[allow(unused_assignments)]   // Turning this off for fd that is assigned in unsafe block
+	let mut fd: i32 = -1;
+	unsafe {
+	    fd =  real!(socket)(inet, s_type, protocol)  ;
+            if  fd < 0 {
+		let err_code = __errno_location(); // Get the error code
+		let err_msg = std::io::Error::from_raw_os_error(*err_code);
+		eprintln!("failed to create socket fd, do you have enough fds? {}", err_msg);
+	    }
+
+	    let bind_out = libc::bind(fd, &sock_addr as *const sockaddr_in as *const sockaddr,
+	     			      mem::size_of::<sockaddr_in>() as u32);
+
+	    if bind_out < 0 {
+		let err_code = __errno_location(); // Get the error code
+		let err_msg = std::io::Error::from_raw_os_error(*err_code);
+		eprintln!("Failed to bind socket to address: {:?},  {}", octets, err_msg);
+	    }
+	    info!("bind: {:?}", bind_out);
+	}
+	return fd;
+    }
+}
+
+#+end_src
+
+This looks complex, but the basic idea is that this library gets invoked
+every time =smbclient= makes a socket call. This code intercepts it and rewrites to
+make its own socket call and then bind it to an address that is passed in as
+environment variable.
+If you are not familiar with C socket programming, refer to  [[https://beej.us/guide/bgnet/html/split/system-calls-or-bust.html#socket][Beej's guide]]
+
+I'm using the [[https://github.com/geofft/redhook][redhook]] crate to rewrite the socket call. This is done with two
+macros: redhook::hook! on line 11 that catches the socket call from =smbclient=
+and redhook::real! on line 34 that accesses the underlying socket call.
+
+- Line 13: We set up an IpV4 address structure that will be used to bind to.
+- Line 14: we open a file for debugging.
+- Line 16: We get the IP address passed in as an environment variable.
+- line 24: Initialize the sockaddr_in struct
+- line 41: bind the socket to the IP address 
+
+instead of using an environment variable to pass in the IP address we could have
+used IPC, but this is simpler.  
+Compiling this as a library called =libsocket_intercept.so= we can use it like
+this:
+#+begin_src sh
+   LD_PRELOAD="./libsocket_interceptor.so" __CLIENT_ADDRESS__="10.0.1.101" /usr/bin/smbclient -Uguest -N //10.0.1.11/public  -c 'get "test_file.txt"'
+#+end_src
+
+In the original version this command was run from a C program that generated the
+IP addresses and ran multiple instances of the command.
+
+The one remaining problem is that the IP aliased interfaces:
+- eth0:1
+- eth0:2
+- eth0:3
+- ...
+  
+only have unique IPaddresses, but the underlying MAC address is that of the
+actual physical interface.
 
 At the time we got around this problem by rewriting the Ethernet headers and
 mapping the ethernet address to one based on the IP address for the packets
-going out to the SMB filer. On the way back they were all rewritten to the
-correct address.
+going out to the SMB filer.  This was done with a [[https://www.iwl.com/products/maxwell-pro][Maxwell Pro]] box.   This took
+packets coming from one interface copied them over to a userspace tool that
+allowed you to modify the packets before passing them back out to the other
+interfaces.
 
-
-The reason for the maxwell in this setup is that the IP aliased interfaces have
-unique IP addresses, but they all have the same IP address as the underlying 
+* Second Attempt Linux 2025 
 
 In the time since I built this there's been new features added to the Linux
 networking stack. This article goes through some of the ideas that I tried to
@@ -67,49 +162,41 @@ get a more robust version working. The solution turned out to be more
 straight forward than the original implementation.
 
 My initial thought was to do something similar to the original version.
-- intercept the socket call using [[https://man7.org/linux/man-pages/man8/ld.so.8.html][LD_PRELOAD]]
 - bind the socket to a local virtual interface
-- rewrite the ethernet header using eBPF
+- intercept the socket call using =LD_PRELOAD=
+- rewrite the ethernet header using =eBPF=
 
  Instead of using C/Perl/C++, use Rust with
- - [[https://aya-rs.dev/][Aya]] for the eBPF bindings
- - [[https://github.com/geofft/redhook][Redhook]] for doing LD_PRELOAD
+  - [[https://aya-rs.dev/][Aya]] for the =eBPF= bindings
+  - [[https://github.com/geofft/redhook][Redhook]] for doing =LD_PRELOAD=
 
- After some work it was possible to get it to work without needing
-  eBPF or LD_PRELOAD, only using Linux namespaces. At some point I might
-  integrate eBPF back in for traffic shaping. 
+  After some work it was possible to get it to work without needing
+   =eBPF= or =LD_PRELOAD=, only using Linux namespaces. At some point I might
+   integrate =eBPF= back in for traffic shaping. 
 
   
-** Side note on Linux virtual networking
+*** Side note on Linux virtual networking
 
-For a synopsis on [[https://developers.redhat.com/blog/2018/10/22/introduction-to-linux-interfaces-for-virtual-networking#][Linux Virtual Networking]]
+- Namespaces: Partition of kernel resources, so processes in different
+  namespaces see different resources. 
+
+- Macvlans: Behaves like a virtual L2 interface on top of another one. So you
+  can have multiple virtual interfaces on top of a physical interface. The
+  limitation is that the virtual interfaces cannot directly communicate with the host.
+
+- Bridge: Behaves like a network switch, forwards packets between interfaces
+
+See [[https://developers.redhat.com/blog/2018/10/22/introduction-to-linux-interfaces-for-virtual-networking#][Linux Virtual Networking]] for a more complete description.
 We will be using the following
 
-*** Namespaces
-Partition of kernel resources, so processes in different namespaces see
-different resources. 
 
-*** Macvlans
-Behaves like a virtual L2 interface on top of another one. So you can have
-mutiple virtual interfaces on top of a physical interface. The limitation is
-that the virtual interfaces cannot directly communicate with the host.
-
-*** Bridge
-Behaves like a network switch, forwards packets between interfaces
-
-*** Veths
-Behaves like a network cable - created in pairs. Packets transmitted on
-one device on the pair are available on the other device
-
-
-* Configuration
-The idea is:
+** Configuration
 -  setup multiple macvlans
-- Place each macvlan in a seperate namespace
+- Place each macvlan in a separate namespace
 - Connect the macvlans to the same parent interface in bridge mode
 - run the traffic generation tool in a namespace
 
-#+CAPTION: Namespaces
+#+CAPTION: Namespace and macvlan configuration
 #+NAME:   fig:namespaces004
  [[./images/namespace.png]]
 
@@ -173,7 +260,7 @@ Lets configure two  macvlans  on that interface
 
 #+end_src
 
-Verify that the macvlans came up, checking in the respective namespaces:
+Verify that the macvlans came up, checking the respective namespaces:
 #+begin_src sh
   sudo ip netns exec myns0 ip a
   104: macvlan0@if3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default qlen 1000
@@ -193,7 +280,7 @@ Verify that the macvlans came up, checking in the respective namespaces:
 
 #+end_src
 
-I have a system connected via ethernet cable to this interface at 192.168.56.20.
+I have a system connected via ethernet cable to this interface at =192.168.56.20=.
 We can verify that its working by running ping in the respective namespaces:
 
 #+begin_src sh
@@ -225,38 +312,35 @@ being pinged:
 
 [[./images/pcap002.png]]
 
-Comparing the two images we can see that the packets from 192.168.56.10 and
+Comparing the two images we can see that the packets from =192.168.56.10= and
 192.168.56.11 are coming from different MAC addresses:
-- b6:16:ca:59:9b:4c
-- ca:26:70:ca:6d:c6
+- =b6:16:ca:59:9b:4c=
+- =ca:26:70:ca:6d:c6=
 
 Clean up 
 #+begin_src sh
-  # Clean up
-  # Clean up
   ip netns del $NS0
   ip netns del $NS1  
 
 #+end_src
 
 ** Interim Summary
-So by just using the shell we have prototyped a setup where from a single host we
-can send packets that appear to be coming from an arbitrary number of hosts .
+We have prototype where we can send packets that appear to be coming
+from an arbitrary number of hosts .
 The next step is to use this idea to build a program that will set up the
-configuration and then run a specified number of connections.
-The original spec called for at least one thousand unique connections to be run
-concurrently. This would be possible using the shell, but will be easier to
+configuration and  run a specified number of connections.
+The original spec called for at least one thousand unique concurrent
+connections. This would be possible using the shell, but will be easier to
 manage with a more fully featured language. 
 
-I chose Rust, but any other language like Python or golang would work,
-the bash would start as a good jumping off point. 
+I chose Rust, but any other language like Python or Golang would work.
 
 ** Rust Implementation
 :PROPERTIES:
 :ID:       d111dc63-6542-4284-9105-7d324c8d832e
 :END:
 Implementing in Rust allows us to use Rust's Tokio runtime to spawn huge numbers
-of smbclient instances. We can also use crates that make working with large
+of =smbclient= instances. We can also use crates that make working with large
 numbers of network connections easier.
 
 #+begin_src rust -n  
@@ -320,14 +404,13 @@ async fn spawn_task(config: LocalConfig, smb_address: Ipv4Addr, filename: &Strin
 }
 #+end_src
 
-The LocalConfig struct at the top has a host fields of type [[https://docs.rs/ipnet/latest/ipnet/struct.Ipv4AddrRange.html][Ipv4AddrRange]]. An
-iterator over a range of IPv4 addresses.
-
-setup() creates the namespaces, the bridge and the macvlans.
-
-The rest of the code should be easy to
-understand from the shell example we started with. We use Tokio to spawn
-concurrent instances of smbclient, each running in its own namespace
+- Line 2 LocalConfig struct puts some parameters together:
+  -  =hosts=: of type [[https://docs.rs/ipnet/latest/ipnet/struct.Ipv4AddrRange.html][Ipv4AddrRange]] an iterator over a range of IPv4 addresses
+  - =interface=: the underlying network interface
+  - =cidr_suffix=: IpV4AddRange needs [[https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing][CIDR]] to know how many hosts in the subnet
+  - =base_namespace=: The prefix for the namespaces that will be created. 
+- line 10: Run the =smbclient= command using Tokio to spawn concurrent tasks each
+  running in its own namespace over unique IP and MAC addresses.
 
  Running this with two instances:
  #+begin_src sh
