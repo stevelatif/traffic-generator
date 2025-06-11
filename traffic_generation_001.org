@@ -4,11 +4,8 @@
 #+OPTIONS: num:nil
 :END:
 
-* Disclaimer:
-All mistakes and errors are my own, please be careful running this code, its
-meant for a self contained lab, not for a production environment.
-I used AI to generate the SAMBA config file because I'm lazy. The rest of the
-text and code is all my own. Comments and feedback are all welcome.
+How to simulate network from thousands of unique clients easily with a single
+host. 
 
 * Introduction
 Many years ago I had to replicate a customer issue of a  1000+ windows
@@ -23,6 +20,13 @@ The scenario that we were trying to replicate was something like:
 - A large lab with a single Windows Filer
 - A thousand client machines that would mount a shared drive when the staff 
   started work in the morning.
+
+* Disclaimer:
+All mistakes and errors are my own, please be careful running this code, its
+meant for a self contained lab, not for a production environment.
+I used AI to generate the SAMBA config file because I'm lazy. The rest of the
+text and code is all my own. Comments and feedback are all welcome.
+  
 
 ** First Attempt Linux 2003 
 
