@@ -21,10 +21,14 @@ The scenario that we were trying to replicate was something like:
  - network emulator [[https://www.iwl.com/products/maxwell-pro][Maxwell]] from the good people at [[https://www.iwl.com/][IWL]] to rewrite the ethernet
    headers.
 
-  The following diagram is an illustration of the set up 
+  The following diagram is an illustration of the set up
+#+CAPTION: Traffic generation with Maxwell Pro
+#+NAME:   fig:config001
 [[./images/maxwell.png]]
 
 A standard network client socket works in the following way:
+#+CAPTION: System Calls
+#+NAME:   fig:system002
 [[./images/client.png]]
 
 To get the client socket to be associated with the a particular IP address we
@@ -39,7 +43,8 @@ our own version of the library with the socket system call we can create a
 socket in the usual way, get the file descriptor that is returned and then use
 that to bind the socket to the interface we want. This is where LD_PRELOAD and
 dl_sym come in.
-
+#+CAPTION: Client Bind
+#+NAME:   fig:clientbind003
 [[./images/clientbind.png]]
 
 
@@ -104,7 +109,9 @@ The idea is:
 - Connect the macvlans to the same parent interface in bridge mode
 - run the traffic generation tool in a namespace
 
-  [[./images/namespace.png]]
+#+CAPTION: Namespaces
+#+NAME:   fig:namespaces004
+ [[./images/namespace.png]]
 
 I implemented this in Rust, but to understand the configuration lets look at
 the configuration in bash:
