@@ -3,13 +3,21 @@
 :ID:       5354aa94-4145-4d35-92f1-c1d6de4c4acb
 #+OPTIONS: num:nil
 :END:
+
+* Disclaimer:
+All mistakes and errors are my own, please be careful running this code, its
+meant for a self contained lab, not for a production environment.
+I used AI to generate the SAMBA config file because I'm lazy. The rest of the
+text and code is all my own. Comments and feedback are all welcome.
+
+* Introduction
 Many years ago I had to replicate a customer issue of a  1000+ windows
 clients mounting a shared drive. With luck, some
 C, Perl and custom hardware I was able to build something that
 worked, some of the time.
 
-In this article I will describe the original approach accomplished with luck and
-a modern implementation that uses modern Linux networking.
+In this article I will describe the original approach and
+a modern simpler implementation.
 
 The scenario that we were trying to replicate was something like:
 - A large lab with a single Windows Filer
@@ -20,7 +28,7 @@ The scenario that we were trying to replicate was something like:
 
  The first setup to emulate this was a single Linux box running:
  - threaded C code to drive the client and
- - [[https://linux.die.net/man/1/smbclient][=smbclient=]] CLI tool to generate the traffic
+ - [[https://linux.die.net/man/1/smbclient][smbclient]] CLI tool to generate the traffic
  - system calls [[https://man7.org/linux/man-pages/man3/dlopen.3.html][dlopen]] and [[https://man7.org/linux/man-pages/man2/bind.2.html][bind]] to simulate a thousand connections by binding to
    [[https://docs.kernel.org/networking/alias.html][IP aliased interfaces]]
  - network emulator [[https://www.iwl.com/products/maxwell-pro][Maxwell]] from the good people at [[https://www.iwl.com/][IWL]] to rewrite the ethernet
@@ -33,12 +41,11 @@ A standard network client socket works in the following way:
 #+NAME:   fig:config001
 [[./images/maxwell.png]]
 
-To get the client socket to be associated with the a particular IP address we
+To get the client socket associated with a particular IP address we
 can use the [[https://man7.org/linux/man-pages/man2/bind.2.html][bind]] system call. This introduces a problem, the socket call is
-being made by the ==smbclient== program. We could get the source code and alter it
-to make the bind call. We would also need to pass some extra parameters to tell
-it which interface or address to bind to. The codebase is large and the
-complexities are starting to mount.
+made by the =smbclient= program. We could get the SAMBA source code and alter it
+to make the bind call. The codebase is large and the cost for building
+and testing such a small change is high. 
 
 #+CAPTION: Standard client socket set up
 #+NAME:   fig:system002
@@ -49,6 +56,9 @@ our own version of the library with the socket system call we can create a
 socket in the usual way, get the file descriptor that is returned and then use
 that to bind the socket to the interface we want. This is where =LD_PRELOAD= and
 =dl_sym= come in.
+The other advantage is that we get a more general tool that we can use for other
+networking protocols.
+
 #+CAPTION: Modified client socket setup with bind
 #+NAME:   fig:clientbind003
 [[./images/clientbind.png]]
@@ -118,8 +128,8 @@ environment variable.
 If you are not familiar with C socket programming, refer to  [[https://beej.us/guide/bgnet/html/split/system-calls-or-bust.html#socket][Beej's guide]]
 
 I'm using the [[https://github.com/geofft/redhook][redhook]] crate to rewrite the socket call. This is done with two
-macros: redhook::hook! on line 11 that catches the socket call from =smbclient=
-and redhook::real! on line 34 that accesses the underlying socket call.
+macros: =redhook::hook!= on line 11 that catches the socket call from =smbclient=
+and =redhook::real!= on line 34 that accesses the underlying socket call.
 
 - Line 13: We set up an IpV4 address structure that will be used to bind to.
 - Line 14: we open a file for debugging.
@@ -452,5 +462,7 @@ At this point we have basic traffic generation coming from multiple clients. We
 can add further tools to validate the files that are brought over using a
 checksum. For now let's leave that as an exercise for the motivated reader or as
 a possible further article.
+It should be easy to switch out =smbclient=  for another traffic generation tool,
+for example =ab=
 
 Source Code: [[https://github.com/stevelatif/traffic-generator/tree/main/traffic-runner][Here]]
